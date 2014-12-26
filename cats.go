@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"io/ioutil"
 
+	"encoding/json"
+	"errors"
+
 	"github.com/gregjones/httpcache"
 	"github.com/gregjones/httpcache/diskcache"
 	"github.com/peterbourgon/diskv"
@@ -15,13 +18,66 @@ func Init(cachePath string) {
 	transport = newTransportWithDiskCache(cachePath)
 }
 
-func GetCats(name string) string {
-	return fmt.Sprintf("Meow, I'm %s!\n", name)
+func GetCats() (*RedditUrlCollection, error) {
+
+	resp, err := transport.Client().Get("http://www.reddit.com/r/aww.json")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	decoder := json.NewDecoder(resp.Body)
+
+	response := redditResponseDto{}
+	if err := decoder.Decode(&response); err != nil {
+		return nil, err
+	}
+
+	urls := make([]string, 0)
+	for _, v := range response.Data.Children {
+		if v.Kind == "t3" && v.Data.Url != "" {
+			urls = append(urls, v.Data.Url)
+		}
+	}
+
+	return &RedditUrlCollection{
+		urls: urls,
+	}, nil
 }
 
-func DownloadCat() ([]byte, error) {
+func (dto *RedditUrlCollection) GetUrl(index int) (string, error) {
+	if index < len(dto.urls) && index >= 0 {
+		return dto.urls[index], nil
+	}
+	return "", errors.New("invalid index")
+}
 
-	resp, err := transport.Client().Get("http://i.imgur.com/3UD7Aqz.jpg")
+type RedditUrlCollection struct {
+	urls []string
+}
+
+type redditResponseDto struct {
+	Kind string
+	Data redditCollectionDto
+}
+
+type redditCollectionDto struct {
+	Modhash  string
+	Children []redditPostDto1
+}
+
+type redditPostDto1 struct {
+	Kind string
+	Data redditPostDto
+}
+
+type redditPostDto struct {
+	Url string
+}
+
+func DownloadCat(url string) ([]byte, error) {
+
+	resp, err := transport.Client().Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +92,6 @@ func DownloadCat() ([]byte, error) {
 	}
 
 	return body, nil
-	// return base64.StdEncoding.EncodeToString(body), nil
 }
 
 func newTransportWithDiskCache(basePath string) *httpcache.Transport {
