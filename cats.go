@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,6 +113,8 @@ func consumeUrl(urls chan string, images chan []byte, done chan struct{}, wg *sy
 				return
 			case images <- bytes:
 			}
+		} else {
+			loggerFunc("failed to download %s %s", url, err.Error())
 		}
 	}
 }
@@ -144,10 +147,18 @@ func produceCatUrls(done chan struct{}) chan string {
 
 			for _, v := range response.Data.Children {
 				if v.Kind == "t3" && v.Data.Url != "" {
+					url := v.Data.Url
+
+					// sometimes the url is missing an extension
+					dotIndex := strings.LastIndex(url, ".")
+					if dotIndex == -1 || dotIndex < strings.LastIndex(url, "/") {
+						url = url + ".jpg"
+					}
+
 					select {
 					case <-done:
 						return
-					case urls <- v.Data.Url:
+					case urls <- url:
 						lastPost = v.Data.Name
 					}
 
