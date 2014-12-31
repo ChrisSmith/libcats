@@ -3,8 +3,8 @@ package libcats
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -19,17 +19,14 @@ type ImageCallback interface {
 	ImageReceived(image []byte)
 }
 
-func OnStart() {
-	fmt.Printf("onStart()")
-}
-
-func OnStop() {
-	fmt.Printf("onStop()")
-}
-
 var transport *httpcache.Transport
+var loggerFunc func(string, ...interface{}) = func(format string, args ...interface{}) {
+	fmt.Printf("%s\n", fmt.Sprintf(format, args...))
+}
 
 func Init(cachePath string) {
+	runtime.GOMAXPROCS(runtime.NumCPU())
+
 	transport = newTransportWithDiskCache(cachePath)
 }
 
@@ -42,7 +39,7 @@ type CallbackToken struct {
 func (token *CallbackToken) Close() {
 	close(token.done)
 	token.wg.Wait()
-	fmt.Printf("callback closed.\n")
+	loggerFunc("callback closed.")
 }
 
 func CreateImageCallback(callback ImageCallback) *CallbackToken {
@@ -52,7 +49,11 @@ func CreateImageCallback(callback ImageCallback) *CallbackToken {
 		wg:            sync.WaitGroup{},
 	}
 
+	loggerFunc("starting timer")
+
 	go startTimer(imageCallback)
+
+	loggerFunc("returning")
 
 	return imageCallback
 }
@@ -60,7 +61,7 @@ func CreateImageCallback(callback ImageCallback) *CallbackToken {
 // Buffers 4 images in memory ready to be consumed by
 // the timer when it ticks
 func startTimer(token *CallbackToken) {
-	fmt.Printf("starting callback timer\n")
+	loggerFunc("starting callback timer, GOMAXPROCS %d", runtime.GOMAXPROCS(-1))
 
 	urls := produceCatUrls(token.done)
 
@@ -82,17 +83,17 @@ func startTimer(token *CallbackToken) {
 		select {
 		case <-token.done:
 			token.wg.Wait()
-			log.Printf("receive on done channel")
+			loggerFunc("receive on done channel")
 			return
 		case <-c:
 			{
 				select {
 				case <-token.done:
 					token.wg.Wait()
-					log.Printf("receive on done channel")
+					loggerFunc("receive on done channel")
 					return
 				case img = <-images:
-					fmt.Printf("sending callback\n")
+					loggerFunc("sending callback")
 					token.imageCallback.ImageReceived(img)
 				}
 			}
@@ -104,7 +105,7 @@ func consumeUrl(urls chan string, images chan []byte, done chan struct{}, wg *sy
 	defer wg.Done()
 
 	for url := range urls {
-		fmt.Printf("downloading %s\n", url)
+		loggerFunc("downloading %s", url)
 		if bytes, err := DownloadBytes(url); err == nil {
 			select {
 			case <-done:
@@ -120,21 +121,37 @@ func produceCatUrls(done chan struct{}) chan string {
 
 	go func() {
 		defer close(urls)
-		response, err := getCats()
+		lastPost := ""
+		backoff := 100
 
-		if err != nil {
-			log.Printf("failed to produceCatUrls. " + err.Error())
-			return
-		}
+		for {
+			response, err := getCats(lastPost)
 
-		for _, v := range response.Data.Children {
-			if v.Kind == "t3" && v.Data.Url != "" {
+			if err != nil {
+				loggerFunc("failed to produceCatUrls. " + err.Error())
+
 				select {
 				case <-done:
 					return
-				case urls <- v.Data.Url:
+				case <-time.After(time.Duration(backoff) * time.Millisecond):
+					backoff *= 2
+					loggerFunc("increased backoff to %d ms", backoff)
+					continue
 				}
+			}
 
+			backoff = 100
+
+			for _, v := range response.Data.Children {
+				if v.Kind == "t3" && v.Data.Url != "" {
+					select {
+					case <-done:
+						return
+					case urls <- v.Data.Url:
+						lastPost = v.Data.Name
+					}
+
+				}
 			}
 		}
 	}()
@@ -142,9 +159,14 @@ func produceCatUrls(done chan struct{}) chan string {
 	return urls
 }
 
-func getCats() (*redditResponseDto, error) {
+func getCats(afterPost string) (*redditResponseDto, error) {
 
-	resp, err := getClient().Get("http://www.reddit.com/r/aww.json")
+	url := "http://www.reddit.com/r/aww.json"
+	if afterPost != "" {
+		url += "?after=" + afterPost
+	}
+
+	resp, err := getClient().Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +198,8 @@ type redditPostDto1 struct {
 }
 
 type redditPostDto struct {
-	Url string
+	Url  string
+	Name string
 }
 
 func DownloadBytes(url string) ([]byte, error) {
@@ -188,7 +211,7 @@ func DownloadBytes(url string) ([]byte, error) {
 
 	defer resp.Body.Close()
 
-	fmt.Printf("from cache? %s\n", resp.Header.Get("X-From-Cache"))
+	loggerFunc("from cache? %s", resp.Header.Get("X-From-Cache"))
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {

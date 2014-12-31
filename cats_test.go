@@ -14,6 +14,7 @@ func TestCreateImageCallback(t *testing.T) {
 	dir, err := ioutil.TempDir(os.TempDir(), "libcats")
 	defer os.RemoveAll(dir)
 	Init(dir)
+	SetThreadLogger()
 
 	if err != nil {
 		t.Errorf("%s", err.Error())
