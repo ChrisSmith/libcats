@@ -27,7 +27,7 @@ func TestCreateImageCallback(t *testing.T) {
 
 	// pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
 
-	toEnd := time.After(5 * time.Second)
+	toEnd := time.After(30 * time.Second)
 	toPrint := time.Tick(1 * time.Second)
 	for {
 		select {
@@ -51,7 +51,7 @@ func printHeap() {
 	log.Printf("memstats: bytes = %d footprint = %d", memstats.HeapAlloc, memstats.Sys)
 }
 
-func (callback TestImageCallback) ImageReceived(image []byte) {
+func (callback TestImageCallback) ImageReceived(Image []byte, Url string, Title string, Author string, Permalink string) {
 	callback.imagesReceived += 1
 }
 

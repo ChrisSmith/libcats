@@ -1,7 +1,12 @@
 package libcats
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
 	"io/ioutil"
 	"net/http"
 	"runtime"
@@ -13,11 +18,28 @@ import (
 
 	"github.com/gregjones/httpcache"
 	"github.com/gregjones/httpcache/diskcache"
+	"github.com/nfnt/resize"
 	"github.com/peterbourgon/diskv"
 )
 
+type ImageInfo struct {
+	Url       string
+	Title     string
+	Author    string
+	Permalink string
+
+	Image []byte
+}
+
+type ImageMetaData struct {
+	Url       string
+	Title     string
+	Author    string
+	Permalink string
+}
+
 type ImageCallback interface {
-	ImageReceived(image []byte)
+	ImageReceived(image []byte, url string, title string, author string, permalink string)
 }
 
 var transport *httpcache.Transport
@@ -66,7 +88,7 @@ func startTimer(token *CallbackToken) {
 
 	urls := produceCatUrls(token.done)
 
-	var images = make(chan []byte, 4)
+	var images = make(chan ImageInfo, 4)
 	defer close(images)
 
 	// need to wait for produces to exit before
@@ -79,7 +101,7 @@ func startTimer(token *CallbackToken) {
 
 	c := time.Tick(5 * time.Second)
 
-	var img []byte
+	var img ImageInfo
 	for {
 		select {
 		case <-token.done:
@@ -95,32 +117,62 @@ func startTimer(token *CallbackToken) {
 					return
 				case img = <-images:
 					loggerFunc("sending callback")
-					token.imageCallback.ImageReceived(img)
+					token.imageCallback.ImageReceived(img.Image, img.Url, img.Title, img.Author, img.Permalink)
+					loggerFunc("successfully sent callback")
 				}
 			}
 		}
 	}
 }
 
-func consumeUrl(urls chan string, images chan []byte, done chan struct{}, wg *sync.WaitGroup) {
+func consumeUrl(urls chan *ImageMetaData, images chan ImageInfo, done chan struct{}, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for url := range urls {
-		loggerFunc("downloading %s", url)
-		if bytes, err := DownloadBytes(url); err == nil {
+		loggerFunc("downloading %s", url.Url)
+		if imgBytes, err := DownloadBytes(url.Url); err == nil {
+			imgBytes, err := scaleImg(imgBytes)
+			if err != nil {
+				loggerFunc("failed to decode image %+v %s", url, err.Error())
+				continue
+			}
+
+			imgInfo := ImageInfo{
+				Url:       url.Url,
+				Title:     url.Title,
+				Author:    url.Author,
+				Permalink: "http://www.reddit.com/" + url.Permalink,
+				Image:     imgBytes,
+			}
+
 			select {
 			case <-done:
 				return
-			case images <- bytes:
+			case images <- imgInfo:
 			}
 		} else {
-			loggerFunc("failed to download %s %s", url, err.Error())
+			loggerFunc("failed to download %+v %s", url, err.Error())
 		}
 	}
 }
 
-func produceCatUrls(done chan struct{}) chan string {
-	var urls = make(chan string)
+func scaleImg(imgBytes []byte) ([]byte, error) {
+	img, _, err := image.Decode(bytes.NewReader(imgBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	img = resize.Resize(1080, 0, img, resize.Bilinear)
+
+	buf := new(bytes.Buffer)
+	if err := png.Encode(buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func produceCatUrls(done chan struct{}) chan *ImageMetaData {
+	var urls = make(chan *ImageMetaData)
 
 	go func() {
 		defer close(urls)
@@ -155,10 +207,17 @@ func produceCatUrls(done chan struct{}) chan string {
 						url = url + ".jpg"
 					}
 
+					metaData := &ImageMetaData{
+						Url:       url,
+						Title:     v.Data.Title,
+						Author:    v.Data.Author,
+						Permalink: v.Data.Permalink,
+					}
+
 					select {
 					case <-done:
 						return
-					case urls <- url:
+					case urls <- metaData:
 						lastPost = v.Data.Name
 					}
 
@@ -209,8 +268,11 @@ type redditPostDto1 struct {
 }
 
 type redditPostDto struct {
-	Url  string
-	Name string
+	Url       string
+	Name      string
+	Title     string
+	Author    string
+	Permalink string
 }
 
 func DownloadBytes(url string) ([]byte, error) {
