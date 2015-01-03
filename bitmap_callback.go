@@ -82,7 +82,10 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 		token.callback.ImageReceived(imgBytes.Bytes, id)
 		// token.callback.ImageFailed(id)
 		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes.Bytes))
-		freeMemory()
+
+		// This isn't doing anything, so don't bother
+		// freeMemory()
+
 		printHeap()
 	}
 }
