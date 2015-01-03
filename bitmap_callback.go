@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"log"
 	"runtime"
-	"runtime/debug"
 	"time"
 
 	"github.com/nfnt/resize"
@@ -83,8 +81,7 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 		// token.callback.ImageFailed(id)
 		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes.Bytes))
 
-		// This isn't doing anything, so don't bother
-		// freeMemory()
+		freeMemory()
 
 		printHeap()
 	}
@@ -92,13 +89,17 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 
 func freeMemory() {
 	defer timeIt(time.Now(), "freeMemory")
-	debug.FreeOSMemory()
+
+	runtime.GC()
+
+	// This isn't doing anything, so don't bother
+	// debug.FreeOSMemory()
 }
 
 func printHeap() {
 	memstats := new(runtime.MemStats)
 	runtime.ReadMemStats(memstats)
-	log.Printf("memstats: Alloc = %s Sys = %s", sizeof_fmt(memstats.Alloc), sizeof_fmt(memstats.Sys))
+	loggerFunc("memstats: Alloc = %s Sys = %s", sizeof_fmt(memstats.Alloc), sizeof_fmt(memstats.Sys))
 }
 
 var byteSizes [8]string = [...]string{
