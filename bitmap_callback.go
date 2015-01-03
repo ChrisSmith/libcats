@@ -2,8 +2,12 @@ package libcats
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/png"
+	"log"
+	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/nfnt/resize"
@@ -78,7 +82,36 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 		token.callback.ImageReceived(imgBytes.Bytes, id)
 		// token.callback.ImageFailed(id)
 		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes.Bytes))
+		freeMemory()
+		printHeap()
 	}
+}
+
+func freeMemory() {
+	defer timeIt(time.Now(), "freeMemory")
+	debug.FreeOSMemory()
+}
+
+func printHeap() {
+	memstats := new(runtime.MemStats)
+	runtime.ReadMemStats(memstats)
+	log.Printf("memstats: Alloc = %s Sys = %s", sizeof_fmt(memstats.Alloc), sizeof_fmt(memstats.Sys))
+}
+
+var byteSizes [8]string = [...]string{
+	"", "K", "M", "G", "T", "P", "E", "Z",
+}
+
+func sizeof_fmt(num uint64) string {
+	suffix := "b"
+
+	for _, unit := range byteSizes {
+		if num < 1024.0 {
+			return fmt.Sprintf("%d %s%s", num, unit, suffix)
+		}
+		num /= 1024.0
+	}
+	return fmt.Sprintf("%d %s%s", num, "Y", suffix)
 }
 
 func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan bytesOrError {

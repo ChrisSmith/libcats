@@ -2,9 +2,9 @@ package libcats
 
 import (
 	"io/ioutil"
-	"log"
 	"os"
-	"runtime"
+	"runtime/debug"
+	"runtime/pprof"
 	"testing"
 	"time"
 )
@@ -22,8 +22,9 @@ func setup(t *testing.T) {
 
 func MakeTestCallback() TestImageCallback {
 	return TestImageCallback{
-		imagesReceived: 0,
-		imgReceived:    make(chan ImageInfo),
+		imagesReceived:  0,
+		imgReceived:     make(chan ImageInfo),
+		imgMetaReceived: make(chan ImageMetaData),
 	}
 }
 
@@ -91,16 +92,48 @@ func TestCreateMetaDataCallback(t *testing.T) {
 	setup(t)
 	printHeap()
 
+	<-time.After(5 * time.Second)
+
 	callback := MakeTestCallback()
 	token := CreateMetaDataCallback(callback, "")
 
+	duration := 10 * time.Second
+
+	go func() {
+		for {
+			select {
+			case <-time.After(duration):
+				return
+
+			case meta, ok := <-callback.imgMetaReceived:
+				if ok {
+					CreateImageCallback(callback, 1024, 768, meta.Id, meta.Url)
+					<-time.After(1 * time.Second)
+				}
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-time.After(duration):
+				return
+			case <-callback.imgReceived:
+				// need a reader for the callback, otherwise it'll just block
+			}
+		}
+	}()
+
+	busyLoop(duration)
+
 	token.Close()
 
-	// toEnd := time.After(30 * time.Second)
-	// toPrint := time.Tick(1 * time.Second)
+	<-time.After(5 * time.Second)
+	debug.FreeOSMemory()
+	printHeap()
 
-	// All go routines should have stopped
-	// pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
+	<-time.After(5 * time.Hour)
 }
 
 func TestCreateImageCallback(t *testing.T) {
@@ -120,15 +153,59 @@ func TestCreateImageCallback(t *testing.T) {
 	}
 }
 
-func printHeap() {
-	runtime.GC()
-	memstats := new(runtime.MemStats)
-	runtime.ReadMemStats(memstats)
-	log.Printf("memstats: bytes = %d footprint = %d", memstats.HeapAlloc, memstats.Sys)
+func TestCreateImageCallbackCancelRequest(t *testing.T) {
+	setup(t)
+
+	callback := MakeTestCallback()
+	token := CreateImageCallback(callback, 1080, 1776, "foobar", "http://imgur.com/0Hx3frP.jpg")
+	token.Close()
+
+	select {
+	case <-time.After(10 * time.Second):
+		// success
+
+	case img := <-callback.imgReceived:
+		if img.Image == nil {
+			t.Errorf("img is nil")
+		}
+	}
+}
+
+func busyLoop(duration time.Duration) {
+	toEnd := time.After(duration)
+	toPrint := time.Tick(500 * time.Millisecond)
+
+	for {
+		select {
+		case <-toEnd:
+			printHeap()
+			<-time.After(5 * time.Second)
+
+			// dumpGoRoutines()
+			printHeap()
+			return
+		case <-toPrint:
+			printHeap()
+		}
+	}
+}
+
+func dumpGoRoutines() {
+	pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
 }
 
 func (callback TestImageCallback) MetaDataReceived(url string, title string, author string, permalink string, id string) {
 	loggerFunc("MetaDataReceived %s", url)
+
+	meta := ImageMetaData{
+		Url:       url,
+		Title:     title,
+		Author:    author,
+		Permalink: permalink,
+		Id:        id,
+	}
+
+	callback.imgMetaReceived <- meta
 }
 
 func (callback TestImageCallback) ImageFailed(id string) {
@@ -147,6 +224,7 @@ func (callback TestImageCallback) ImageReceived(image []byte, id string) {
 }
 
 type TestImageCallback struct {
-	imagesReceived int
-	imgReceived    chan ImageInfo
+	imagesReceived  int
+	imgReceived     chan ImageInfo
+	imgMetaReceived chan ImageMetaData
 }
