@@ -59,9 +59,13 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 		return
 	}
 
-	imgBytes, err := scaleImg(boe.Bytes, width, height)
-	if err != nil {
-		loggerFunc("failed to decode image %s %s %dx%d %s", id, url, width, height, err.Error())
+	imgBytes, ok := <-scaleImg(token.done, boe.Bytes, width, height)
+	if !ok {
+		return
+	}
+
+	if imgBytes.Error != nil {
+		loggerFunc("failed to decode image %s %s %dx%d %s", id, url, width, height, imgBytes.Error.Error())
 		token.callback.ImageFailed(id)
 		return
 	}
@@ -71,67 +75,106 @@ func (token *ImageCallbackToken) downloadImage(id string, url string, width int,
 		return
 	default:
 		start := time.Now()
-		token.callback.ImageReceived(imgBytes, id)
+		token.callback.ImageReceived(imgBytes.Bytes, id)
 		// token.callback.ImageFailed(id)
-		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes))
+		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes.Bytes))
 	}
 }
 
-func scaleImg(imgBytes []byte, width int, height int) ([]byte, error) {
-	start := time.Now()
+func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan bytesOrError {
+	resultChan := make(chan bytesOrError)
 
-	img, _, err := image.Decode(bytes.NewReader(imgBytes))
-	if err != nil {
-		return nil, err
-	}
+	go func() {
+		defer close(resultChan)
+		start := time.Now()
 
-	decoding := time.Since(start)
-	start = time.Now()
-
-	uWidth := uint(width)
-	uHight := uint(height)
-
-	if uWidth != 0 && uHight != 0 {
-		// full screen images!
-		if uWidth > uHight {
-			uHight = 0
-		} else {
-			uWidth = 0
+		result := bytesOrError{
+			Bytes: nil,
+			Error: nil,
 		}
 
-		img = resize.Resize(uWidth, uHight, img, resize.Bilinear)
-	} else {
-		loggerFunc("invalid width and height")
-	}
+		errorOut := func(err error) {
+			result.Error = err
+			select {
+			case <-done:
+			case resultChan <- result:
+			}
+		}
 
-	resizing := time.Since(start)
-	start = time.Now()
+		img, _, err := image.Decode(bytes.NewReader(imgBytes))
+		if err != nil {
+			errorOut(err)
+			return
+		}
 
-	orgBounds := img.Bounds()
+		select {
+		case <-done:
+			return
+		default:
+		}
 
-	img, err = cutter.Crop(img, cutter.Config{
-		Width:  width,
-		Height: height,
-		Mode:   cutter.Centered,
-	})
-	if err != nil {
-		return nil, err
-	}
+		decoding := time.Since(start)
+		start = time.Now()
 
-	loggerFunc("cutting image down from %+v to %+v", orgBounds, img.Bounds())
+		uWidth := uint(width)
+		uHight := uint(height)
 
-	cropping := time.Since(start)
-	start = time.Now()
+		if uWidth != 0 && uHight != 0 {
+			// full screen images!
+			if uWidth > uHight {
+				uHight = 0
+			} else {
+				uWidth = 0
+			}
 
-	buf := new(bytes.Buffer)
-	e := png.Encoder{
-		CompressionLevel: png.NoCompression,
-	}
-	if err := e.Encode(buf, img); err != nil {
-		return nil, err
-	}
+			img = resize.Resize(uWidth, uHight, img, resize.Bilinear)
+		} else {
+			loggerFunc("invalid width and height")
+		}
 
-	loggerFunc("(decode/resize/crop/encode) took %s/%s/%s/%s", decoding, resizing, cropping, time.Since(start))
+		select {
+		case <-done:
+			return
+		default:
+		}
 
-	return buf.Bytes(), nil
+		resizing := time.Since(start)
+		start = time.Now()
+
+		orgBounds := img.Bounds()
+
+		img, err = cutter.Crop(img, cutter.Config{
+			Width:  width,
+			Height: height,
+			Mode:   cutter.Centered,
+		})
+		if err != nil {
+			errorOut(err)
+			return
+		}
+
+		loggerFunc("cutting image down from %+v to %+v", orgBounds, img.Bounds())
+
+		cropping := time.Since(start)
+		start = time.Now()
+
+		buf := new(bytes.Buffer)
+		e := png.Encoder{
+			CompressionLevel: png.NoCompression,
+		}
+		if err := e.Encode(buf, img); err != nil {
+			errorOut(err)
+			return
+		}
+
+		loggerFunc("(decode/resize/crop/encode) took %s/%s/%s/%s", decoding, resizing, cropping, time.Since(start))
+
+		result.Bytes = buf.Bytes()
+
+		select {
+		case <-done:
+		case resultChan <- result:
+		}
+	}()
+	return resultChan
 }
