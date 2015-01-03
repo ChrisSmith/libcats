@@ -48,18 +48,18 @@ func timeIt(start time.Time, description string) {
 func (token *ImageCallbackToken) downloadImage(id string, url string, width int, height int) {
 	loggerFunc("downloading %s %s %dx%d", id, url, width, height)
 
-	bytesOrError, ok := <-downloadBytes(url, token.done)
+	boe, ok := <-downloadBytes(url, token.done)
 	if !ok {
 		return
 	}
 
-	if bytesOrError.Error != nil {
-		loggerFunc("failed to download %s %s %dx%d %s", id, url, width, height, bytesOrError.Error.Error())
+	if boe.Error != nil {
+		loggerFunc("failed to download %s %s %dx%d %s", id, url, width, height, boe.Error.Error())
 		token.callback.ImageFailed(id)
 		return
 	}
 
-	imgBytes, err := scaleImg(bytesOrError.Bytes, width, height)
+	imgBytes, err := scaleImg(boe.Bytes, width, height)
 	if err != nil {
 		loggerFunc("failed to decode image %s %s %dx%d %s", id, url, width, height, err.Error())
 		token.callback.ImageFailed(id)

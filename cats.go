@@ -172,24 +172,24 @@ func getCats(afterPost string, done chan struct{}) chan redditResponseOrError {
 			url += "?after=" + afterPost
 		}
 
-		bytesOrError, ok := <-downloadBytes(url, done)
+		boe, ok := <-downloadBytes(url, done)
 		if !ok {
 			return
 		}
 
-		if bytesOrError.Error != nil {
+		if boe.Error != nil {
 			select {
 			case <-done:
-			case returnChan <- redditResponseOrError{Error: bytesOrError.Error}:
+			case returnChan <- redditResponseOrError{Error: boe.Error}:
 			}
 			return
 		}
 
 		redditResponse := redditResponseDto{}
-		if err := json.Unmarshal(bytesOrError.Bytes, &redditResponse); err != nil {
+		if err := json.Unmarshal(boe.Bytes, &redditResponse); err != nil {
 			select {
 			case <-done:
-			case returnChan <- redditResponseOrError{Error: bytesOrError.Error}:
+			case returnChan <- redditResponseOrError{Error: boe.Error}:
 			}
 			return
 		}
@@ -203,18 +203,18 @@ func getCats(afterPost string, done chan struct{}) chan redditResponseOrError {
 	return returnChan
 }
 
-type BytesOrError struct {
+type bytesOrError struct {
 	Bytes []byte
 	Error error
 }
 
-func downloadBytes(url string, done chan struct{}) chan BytesOrError {
-	returnChan := make(chan BytesOrError, 1)
+func downloadBytes(url string, done chan struct{}) chan bytesOrError {
+	returnChan := make(chan bytesOrError, 1)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		defer close(returnChan)
-		returnChan <- BytesOrError{Error: err}
+		returnChan <- bytesOrError{Error: err}
 		return returnChan
 	}
 
@@ -222,7 +222,7 @@ func downloadBytes(url string, done chan struct{}) chan BytesOrError {
 		defer timeIt(time.Now(), fmt.Sprintf("downloading %s", url))
 		defer close(returnChan)
 
-		result := BytesOrError{
+		result := bytesOrError{
 			Bytes: nil,
 			Error: nil,
 		}
@@ -254,7 +254,7 @@ func downloadBytes(url string, done chan struct{}) chan BytesOrError {
 
 	// The http request funnels though the second goroutine
 	// so we can return when the cancellation doesn't happen
-	returnChan2 := make(chan BytesOrError, 1)
+	returnChan2 := make(chan bytesOrError, 1)
 
 	go func() {
 		defer close(returnChan2)
