@@ -99,10 +99,14 @@ func produceCatUrls(token *CallbackToken, lastPost string) {
 		token.isLoading = true
 		token.isLoadingMux.Unlock()
 
-		response, err := getCats(lastPost)
+		response, ok := <-getCats(lastPost, token.done)
+		if !ok {
+			// channel was closed
+			return
+		}
 
-		if err != nil {
-			loggerFunc("failed to produceCatUrls. " + err.Error())
+		if response.Error != nil {
+			loggerFunc("failed to produceCatUrls. " + response.Error.Error())
 
 			select {
 			case <-token.done:
@@ -116,7 +120,7 @@ func produceCatUrls(token *CallbackToken, lastPost string) {
 
 		backoff = 100
 
-		for _, v := range response.Data.Children {
+		for _, v := range response.Response.Data.Children {
 			if v.Kind == "t3" && v.Data.Url != "" {
 				url := v.Data.Url
 
@@ -152,47 +156,129 @@ func produceCatUrls(token *CallbackToken, lastPost string) {
 	}
 }
 
-func getCats(afterPost string) (*redditResponseDto, error) {
-	url := "http://www.reddit.com/r/aww.json"
-	if afterPost != "" {
-		url += "?after=" + afterPost
-	}
-
-	resp, err := DownloadBytes(url)
-	if err != nil {
-		return nil, err
-	}
-
-	redditResponse := redditResponseDto{}
-	if err := json.Unmarshal(resp, &redditResponse); err != nil {
-		return nil, err
-	}
-
-	return &redditResponse, nil
+type redditResponseOrError struct {
+	Response *redditResponseDto
+	Error    error
 }
 
-func DownloadBytes(url string) ([]byte, error) {
-	defer timeIt(time.Now(), fmt.Sprintf("downloading %s", url))
+func getCats(afterPost string, done chan struct{}) chan redditResponseOrError {
+	returnChan := make(chan redditResponseOrError)
 
-	resp, err := getClient().Get(url)
+	go func() {
+		defer close(returnChan)
+
+		url := "http://www.reddit.com/r/aww.json"
+		if afterPost != "" {
+			url += "?after=" + afterPost
+		}
+
+		bytesOrError, ok := <-downloadBytes(url, done)
+		if !ok {
+			return
+		}
+
+		if bytesOrError.Error != nil {
+			select {
+			case <-done:
+			case returnChan <- redditResponseOrError{Error: bytesOrError.Error}:
+			}
+			return
+		}
+
+		redditResponse := redditResponseDto{}
+		if err := json.Unmarshal(bytesOrError.Bytes, &redditResponse); err != nil {
+			select {
+			case <-done:
+			case returnChan <- redditResponseOrError{Error: bytesOrError.Error}:
+			}
+			return
+		}
+
+		select {
+		case <-done:
+		case returnChan <- redditResponseOrError{Response: &redditResponse}:
+		}
+	}()
+
+	return returnChan
+}
+
+type BytesOrError struct {
+	Bytes []byte
+	Error error
+}
+
+func downloadBytes(url string, done chan struct{}) chan BytesOrError {
+	returnChan := make(chan BytesOrError, 1)
+
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		defer close(returnChan)
+		returnChan <- BytesOrError{Error: err}
+		return returnChan
 	}
 
-	defer resp.Body.Close()
+	go func() {
+		defer timeIt(time.Now(), fmt.Sprintf("downloading %s", url))
+		defer close(returnChan)
 
-	if resp.Header.Get("X-From-Cache") == "1" {
-		loggerFunc("from cache: YES")
-	} else {
-		loggerFunc("from cache: NO")
-	}
+		result := BytesOrError{
+			Bytes: nil,
+			Error: nil,
+		}
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
+		resp, err := getClient().Do(req)
+		if err != nil {
+			result.Error = err
+			returnChan <- result
+			return
+		}
 
-	return body, nil
+		defer resp.Body.Close()
+
+		if resp.Header.Get("X-From-Cache") == "1" {
+			loggerFunc("from cache: YES")
+		} else {
+			loggerFunc("from cache: NO")
+		}
+
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			result.Error = err
+		} else {
+			result.Bytes = body
+		}
+
+		returnChan <- result
+	}()
+
+	// The http request funnels though the second goroutine
+	// so we can return when the cancellation doesn't happen
+	returnChan2 := make(chan BytesOrError, 1)
+
+	go func() {
+		defer close(returnChan2)
+
+		select {
+		case bytesOrError, ok := <-returnChan:
+			if !ok {
+				return
+			} else {
+				returnChan2 <- bytesOrError
+			}
+		case <-done:
+
+			loggerFunc("trying to cancel request")
+			if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+				loggerFunc("trying to cancel request 2")
+				tr.CancelRequest(req)
+				loggerFunc("successfully canceled request")
+			}
+
+		}
+	}()
+
+	return returnChan2
 }
 
 func newTransportWithDiskCache(basePath string) *httpcache.Transport {

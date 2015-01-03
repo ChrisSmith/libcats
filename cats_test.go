@@ -27,21 +27,63 @@ func MakeTestCallback() TestImageCallback {
 	}
 }
 
-func TestGetCats(t *testing.T) {
+func TestGetCatsCancelRequest(t *testing.T) {
 	setup(t)
-	response, err := getCats("")
+	done := make(chan struct{})
+	close(done) // close it early
 
-	if err != nil {
-		t.Errorf("%s", err.Error())
+	response, ok := <-getCats("", done)
+	if !ok {
+		loggerFunc("channel was closed")
+		return
 	}
 
-	if len(response.Data.Children) == 0 {
+	loggerFunc("%+v", response)
+
+	if response.Error != nil {
+		t.Errorf("%s", response.Error.Error())
+		return
+	}
+
+	if len(response.Response.Data.Children) == 0 {
 		t.Errorf("no children")
+		return
 	}
 
-	item := response.Data.Children[0].Data
+	item := response.Response.Data.Children[0].Data
 	if item.Url == "" {
 		t.Errorf("no url %+v", item)
+		return
+	}
+}
+
+func TestGetCats(t *testing.T) {
+	setup(t)
+	done := make(chan struct{})
+	defer close(done)
+
+	response, ok := <-getCats("", done)
+	if !ok {
+		t.Errorf("channel was closed")
+		return
+	}
+
+	loggerFunc("%+v", response)
+
+	if response.Error != nil {
+		t.Errorf("%s", response.Error.Error())
+		return
+	}
+
+	if len(response.Response.Data.Children) == 0 {
+		t.Errorf("no children")
+		return
+	}
+
+	item := response.Response.Data.Children[0].Data
+	if item.Url == "" {
+		t.Errorf("no url %+v", item)
+		return
 	}
 }
 

@@ -48,26 +48,32 @@ func timeIt(start time.Time, description string) {
 func (token *ImageCallbackToken) downloadImage(id string, url string, width int, height int) {
 	loggerFunc("downloading %s %s %dx%d", id, url, width, height)
 
-	if imgBytes, err := DownloadBytes(url); err == nil {
-		imgBytes, err := scaleImg(imgBytes, width, height)
-		if err != nil {
-			loggerFunc("failed to decode image %s %s %dx%d %s", id, url, width, height, err.Error())
-			token.callback.ImageFailed(id)
-			return
-		}
+	bytesOrError, ok := <-downloadBytes(url, token.done)
+	if !ok {
+		return
+	}
 
-		select {
-		case <-token.done:
-			return
-		default:
-			start := time.Now()
-			token.callback.ImageReceived(imgBytes, id)
-			// token.callback.ImageFailed(id)
-			loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes))
-		}
-	} else {
-		loggerFunc("failed to download %s %s %dx%d %s", id, url, width, height, err.Error())
+	if bytesOrError.Error != nil {
+		loggerFunc("failed to download %s %s %dx%d %s", id, url, width, height, bytesOrError.Error.Error())
 		token.callback.ImageFailed(id)
+		return
+	}
+
+	imgBytes, err := scaleImg(bytesOrError.Bytes, width, height)
+	if err != nil {
+		loggerFunc("failed to decode image %s %s %dx%d %s", id, url, width, height, err.Error())
+		token.callback.ImageFailed(id)
+		return
+	}
+
+	select {
+	case <-token.done:
+		return
+	default:
+		start := time.Now()
+		token.callback.ImageReceived(imgBytes, id)
+		// token.callback.ImageFailed(id)
+		loggerFunc("%s took %s size %d", " <- ImageReceived", time.Since(start), len(imgBytes))
 	}
 }
 
