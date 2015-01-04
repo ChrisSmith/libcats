@@ -124,6 +124,7 @@ func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan b
 	go func() {
 		defer close(resultChan)
 		start := time.Now()
+		orgStart := start
 
 		result := bytesOrError{
 			Bytes: nil,
@@ -178,8 +179,6 @@ func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan b
 		resizing := time.Since(start)
 		start = time.Now()
 
-		orgBounds := img.Bounds()
-
 		img, err = cutter.Crop(img, cutter.Config{
 			Width:  width,
 			Height: height,
@@ -190,10 +189,7 @@ func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan b
 			return
 		}
 
-		loggerFunc("cutting image down from %+v to %+v", orgBounds, img.Bounds())
-
-		cropping := time.Since(start)
-		start = time.Now()
+		// loggerFunc("cutting image down from %+v to %+v", orgBounds, img.Bounds())
 
 		buf := new(bytes.Buffer)
 		e := png.Encoder{
@@ -204,7 +200,7 @@ func scaleImg(done chan struct{}, imgBytes []byte, width int, height int) chan b
 			return
 		}
 
-		loggerFunc("(decode/resize/crop/encode) took %s/%s/%s/%s", decoding, resizing, cropping, time.Since(start))
+		loggerFunc("(decode/resize/encode) took %s/%s/%s total: %s", decoding, resizing, time.Since(start), time.Since(orgStart))
 
 		result.Bytes = buf.Bytes()
 

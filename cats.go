@@ -219,7 +219,7 @@ func downloadBytes(url string, done chan struct{}) chan bytesOrError {
 	}
 
 	go func() {
-		defer timeIt(time.Now(), fmt.Sprintf("downloading %s", url))
+		start := time.Now()
 		defer close(returnChan)
 
 		result := bytesOrError{
@@ -236,11 +236,11 @@ func downloadBytes(url string, done chan struct{}) chan bytesOrError {
 
 		defer resp.Body.Close()
 
+		fromCache := "NO"
 		if resp.Header.Get("X-From-Cache") == "1" {
-			loggerFunc("from cache: YES")
-		} else {
-			loggerFunc("from cache: NO")
+			fromCache = "YES"
 		}
+		defer timeIt(start, fmt.Sprintf("downloading %s from cache: %s", url, fromCache))
 
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
